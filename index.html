@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC 'Same-Page' Data Channel Demo</title>
+    <!-- 
+      Loading Tailwind CSS for easy styling.
+      This provides the nice layout and button styles.
+    -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* A little extra style for the message logs */
+        .message-log {
+            height: 200px;
+            background-color: #f9fafb; /* gray-50 */
+            border-color: #e5e7eb; /* gray-200 */
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto bg-white rounded-lg shadow-xl p-6">
+        
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-2">WebRTC 'Same-Page' Demo</h1>
+        <p class="text-center text-gray-600 mb-6">
+            This demo simulates two peers (Peer 1 and Peer 2) on the <strong>same page</strong>. 
+            It shows how WebRTC data channels work without needing a real signaling server.
+        </p>
+
+        <!-- Main Button to Start the Connection -->
+        <div class="text-center mb-6">
+            <button id="startButton" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg shadow-md transition-all">
+                Start & Connect
+            </button>
+        </div>
+
+        <!-- Two-Column Layout for Peers -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+            <!-- == PEER 1 (LOCAL) == -->
+            <div class="border border-gray-200 rounded-lg p-4">
+                <h2 class="text-2xl font-semibold text-blue-700 mb-3">Peer 1 (Local)</h2>
+                
+                <!-- Send Message Form -->
+                <div class="mb-4">
+                    <label for="localMessage" class="block text-sm font-medium text-gray-700">Send Message:</label>
+                    <div class="mt-1 flex rounded-md shadow-sm">
+                        <input type="text" id="localMessage" class="flex-1 block w-full rounded-none rounded-l-md border-gray-300 focus:ring-blue-500 focus:border-blue-500 p-2" placeholder="Type here...">
+                        <button id="sendLocalButton" class="inline-flex items-center px-4 py-2 border border-l-0 border-gray-300 rounded-r-md bg-gray-50 text-sm font-medium text-gray-700 hover:bg-gray-100" disabled>
+                            Send
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Received Messages Log -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Received Messages:</label>
+                    <div id="localLog" class="message-log mt-1 p-2 border rounded-md overflow-y-auto text-sm text-gray-600"></div>
+                </div>
+            </div>
+
+            <!-- == PEER 2 (REMOTE) == -->
+            <div class="border border-gray-200 rounded-lg p-4">
+                <h2 class="text-2xl font-semibold text-green-700 mb-3">Peer 2 (Remote)</h2>
+                
+                <!-- Send Message Form -->
+                <div class="mb-4">
+                    <label for="remoteMessage" class="block text-sm font-medium text-gray-700">Send Message:</label>
+                    <div class="mt-1 flex rounded-md shadow-sm">
+                        <input type="text" id="remoteMessage" class="flex-1 block w-full rounded-none rounded-l-md border-gray-300 focus:ring-blue-500 focus:border-blue-500 p-2" placeholder="Type here...">
+                        <button id="sendRemoteButton" class="inline-flex items-center px-4 py-2 border border-l-0 border-gray-300 rounded-r-md bg-gray-50 text-sm font-medium text-gray-700 hover:bg-gray-100" disabled>
+                            Send
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Received Messages Log -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700">Received Messages:</label>
+                    <div id="remoteLog" class="message-log mt-1 p-2 border rounded-md overflow-y-auto text-sm text-gray-600"></div>
+                </div>
+            </div>
+
+        </div> <!-- end grid -->
+
+        <!-- Status Log -->
+        <div class="mt-6">
+            <h3 class="text-lg font-semibold text-gray-700">Connection Status Log:</h3>
+            <div id="statusLog" class="message-log mt-1 p-2 border rounded-md overflow-y-auto text-sm text-gray-500 bg-gray-900 text-gray-200 font-mono" style="height: 150px;"></div>
+        </div>
+
+    </div> <!-- end container -->
+
+    <script>
+        // --- DOM Elements ---
+        const startButton = document.getElementById('startButton');
+        const sendLocalButton = document.getElementById('sendLocalButton');
+        const sendRemoteButton = document.getElementById('sendRemoteButton');
+        const localMessageInput = document.getElementById('localMessage');
+        const remoteMessageInput = document.getElementById('remoteMessage');
+        const localLog = document.getElementById('localLog');
+        const remoteLog = document.getElementById('remoteLog');
+        const statusLog = document.getElementById('statusLog');
+
+        // --- WebRTC Globals ---
+        let localConnection;
+        let remoteConnection;
+        let localDataChannel;
+        let remoteDataChannel;
+
+        // --- Utility to log messages ---
+        function logStatus(message) {
+            console.log(message);
+            statusLog.innerHTML = `<div>${new Date().toLocaleTimeString()}: ${message}</div>` + statusLog.innerHTML;
+        }
+
+        function logMessage(peer, message) {
+            const logBox = peer === 'local' ? localLog : remoteLog;
+            logBox.innerHTML = `<div>${message}</div>` + logBox.innerHTML;
+        }
+
+        // --- Event Handlers ---
+        startButton.addEventListener('click', createConnection);
+        sendLocalButton.addEventListener('click', sendLocalMessage);
+        sendRemoteButton.addEventListener('click', sendRemoteMessage);
+
+        function createConnection() {
+            logStatus('Starting connection...');
+            startButton.disabled = true;
+
+            // --- STUN servers (optional for local demo, but good practice) ---
+            // These help peers find each other, even behind firewalls.
+            const configuration = {
+                'iceServers': [
+                    { 'urls': 'stun:stun.l.google.com:19302' }
+                ]
+            };
+
+            // --- 1. Create Peer Connections ---
+            localConnection = new RTCPeerConnection(configuration);
+            remoteConnection = new RTCPeerConnection(configuration);
+
+            logStatus('Created local and remote peer connections.');
+
+            // --- 2. Set up ICE Candidate "Signaling" ---
+            // This is the part that a signaling server would normally do.
+            // We just pass the "candidate" from one peer to the other.
+            
+            // When localConnection finds a network path...
+            localConnection.onicecandidate = e => {
+                if (e.candidate) {
+                    logStatus('Local ICE candidate found. Adding to remote.');
+                    remoteConnection.addIceCandidate(e.candidate);
+                }
+            };
+
+            // When remoteConnection finds a network path...
+            remoteConnection.onicecandidate = e => {
+                if (e.candidate) {
+                    logStatus('Remote ICE candidate found. Adding to local.');
+                    localConnection.addIceCandidate(e.candidate);
+                }
+            };
+
+            // --- 3. Create Data Channel (Peer 1 / Local) ---
+            // The "initiator" (localConnection) creates the data channel.
+            localDataChannel = localConnection.createDataChannel('myDataChannel');
+            logStatus('Local peer creating data channel.');
+            
+            // Assign all our event handlers for the data channel
+            setupDataChannelEvents(localDataChannel, 'local');
+
+
+            // --- 4. Set up Data Channel (Peer 2 / Remote) ---
+            // The "remote" peer listens for the channel to be opened.
+            remoteConnection.ondatachannel = e => {
+                logStatus('Remote peer received data channel.');
+                remoteDataChannel = e.channel;
+                
+                // Assign all event handlers for this new channel
+                setupDataChannelEvents(remoteDataChannel, 'remote');
+            };
+
+            // --- 5. Create Offer and Answer (The "Handshake") ---
+            // This is also "signaling" that we are simulating.
+            
+            // Local peer creates an "offer" to connect
+            localConnection.createOffer()
+                .then(offer => {
+                    logStatus('Local peer created OFFER.');
+                    return localConnection.setLocalDescription(offer);
+                })
+                .then(() => {
+                    logStatus('Local peer SET local description.');
+                    // --- Signaling Server Job (Simulated) ---
+                    // Send the offer to the remote peer
+                    // ----------------------------------------
+                    return remoteConnection.setRemoteDescription(localConnection.localDescription);
+                })
+                .then(() => {
+                    logStatus('Remote peer SET remote description (from offer).');
+                    // Remote peer creates an "answer"
+                    return remoteConnection.createAnswer();
+                })
+                .then(answer => {
+                    logStatus('Remote peer created ANSWER.');
+                    return remoteConnection.setLocalDescription(answer);
+                })
+                .then(() => {
+                    logStatus('Remote peer SET local description.');
+                    // --- Signaling Server Job (Simulated) ---
+                    // Send the answer back to the local peer
+                    // ----------------------------------------
+                    return localConnection.setRemoteDescription(remoteConnection.localDescription);
+                })
+                .then(() => {
+                    logStatus('Local peer SET remote description (from answer).');
+                    logStatus('--- CONNECTION HANDSHAKE COMPLETE ---');
+                })
+                .catch(e => {
+                    logStatus(`Error during handshake: ${e}`);
+                    startButton.disabled = false;
+                });
+        }
+
+        // This function sets up all the event listeners for a new data channel
+        function setupDataChannelEvents(channel, peerName) {
+            channel.onopen = () => {
+                logStatus(`Data channel for ${peerName} is OPEN.`);
+                if (peerName === 'local') {
+                    sendLocalButton.disabled = false;
+                    localMessageInput.disabled = false;
+                } else {
+                    sendRemoteButton.disabled = false;
+                    remoteMessageInput.disabled = false;
+                }
+            };
+
+            channel.onclose = () => {
+                logStatus(`Data channel for ${peerName} is CLOSED.`);
+                if (peerName === 'local') {
+                    sendLocalButton.disabled = true;
+                    localMessageInput.disabled = true;
+                } else {
+                    sendRemoteButton.disabled = true;
+                    remoteMessageInput.disabled = true;
+                }
+            };
+
+            channel.onmessage = e => {
+                logStatus(`Message received by ${peerName}: ${e.data}`);
+                logMessage(peerName, e.data);
+            };
+
+            channel.onerror = e => {
+                logStatus(`Data channel for ${peerName} ERROR: ${e}`);
+            };
+        }
+
+        // --- Send Message Functions ---
+        function sendLocalMessage() {
+            const message = localMessageInput.value;
+            if (message === '') return;
+            
+            localDataChannel.send(message);
+            logStatus(`Local peer SENT: ${message}`);
+            // We don't log it to our *own* received box
+            localMessageInput.value = '';
+        }
+
+        function sendRemoteMessage() {
+            const message = remoteMessageInput.value;
+            if (message === '') return;
+            
+            remoteDataChannel.send(message);
+            logStatus(`Remote peer SENT: ${message}`);
+            // We don't log it to our *own* received box
+            remoteMessageInput.value = '';
+        }
+
+    </script>
+</body>
+</html>
